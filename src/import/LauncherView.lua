@@ -67,7 +67,6 @@ local LONG_PRESS_SECONDS = 0.60
 local CONSUMED_TOUCH_MAX = 30
 -- Finger travel past this (px) is a drag, not a tap.
 local TAP_SLOP2 = 16 * 16
-local MIN_SKIN_ROWS = 4
 local SKIN_FORMAT_LABEL = {
   native = "GEN1",
   retroarch = "RETROARCH",
@@ -2249,7 +2248,8 @@ local function buildCartCard(imp, x, y, w, m, version)
   local title = tostring(report.title or report.id or "")
   local broken = (slot and slot.sealBroken == true) or false
   local fillCount = imp.cartFillRows and #imp:cartFillRows(version) or 0
-  local state, stateCol, body = nil, PAL.green, {}
+  local state, stateCol, body
+  body = {}
   if report.refused then
     state, stateCol = Strings("This cart will not start"), PAL.red
     body[#body + 1] = { report.message, PAL.detail }
@@ -2402,7 +2402,7 @@ local function buildGamePanel(imp, x, y, w, availH, m, version, budgetH)
   local budgetLeft = math.max(remaining,
     (budgetH or availH) - (titleH + afterTitle))
 
-  local gap = m.gap
+  gap = m.gap
   local lx, lw, rx2, rw
   if m.twoCol then
     local colW = math.floor((w - m.colGap) / 2)
@@ -3168,7 +3168,6 @@ local function buildImportersPanel(imp, x, y, w, availH, m)
   Kit.text("title", Strings("Extra Importers"), x, cy, PAL.heading)
   cy = cy + Kit.textHeight("title") + math.floor(10 * m.s)
 
-  local listTop = cy
   local pad = math.floor(12 * m.s)
 
   for _, row in ipairs(importerRows(imp)) do
@@ -3255,252 +3254,6 @@ end
 
 -- ---------------------------------------------------------- find mods panel
 
--- SKINS tab: pick the on-screen skin, import one, or open Skin Studio.
-local function buildSkinsPanelLegacy(imp, x, y, w, availH, m)
-  local skins = imp:_ensureSkins()
-  local active = imp:_activeSkin()
-  local gap = m.gap
-  local cy = y
-
-  local title = Strings("Skins/Borders")
-  local bh = m.btnH
-  local importLabel = imp:_skinsImportButtonLabel()
-  local importW = Kit.textWidth("small", importLabel) + math.floor(24 * m.s)
-  if Kit.textWidth("button", title) + importW + math.floor(24 * m.s) > w then
-    importLabel = Strings("Import")
-    importW = Kit.textWidth("small", importLabel) + math.floor(20 * m.s)
-  end
-  local place = Layout.rightCluster(x, w, math.floor(6 * m.s))
-  btn(imp, place(importW), cy, importW, bh, "skins-import", importLabel, {
-    kind = "accent", font = "small",
-    action = function() imp:chooseSkin() end })
-  Kit.text("button", Kit.ellipsize("button", title,
-    math.max(0, w - importW - math.floor(12 * m.s))), x,
-    cy + math.floor((bh - Kit.textHeight("button")) / 2), PAL.heading)
-  cy = cy + bh + math.floor(8 * m.s)
-
-  if imp._skinNotice then
-    cy = cy + Kit.textWrapped("small", imp._skinNotice.text, x, cy, w,
-      imp._skinNotice.ok and PAL.green or PAL.red, 2) + math.floor(8 * m.s)
-  end
-
-  local urlH = m.btnH
-  local addLabel = Strings("Add")
-  local addW = Kit.textWidth("small", addLabel) + math.floor(24 * m.s)
-  local pasteLabel = Strings("Paste")
-  local pasteW = Kit.textWidth("small", pasteLabel) + math.floor(20 * m.s)
-  if imp._skinFetch then
-    Loader.inline(x, cy, w, urlH,
-      Strings("Downloading %s...", tostring(imp._skinFetch.name or "")))
-  else
-    local urlPlace = Layout.rightCluster(x, w, math.floor(6 * m.s))
-    btn(imp, urlPlace(addW), cy, addW, urlH, "skins-url-add", addLabel, {
-      kind = "accent", font = "small",
-      action = function() imp:_addSkinFromUrl() end })
-    if w - addW - pasteW > math.floor(140 * m.s) then
-      btn(imp, urlPlace(pasteW), cy, pasteW, urlH, "skins-url-paste",
-        pasteLabel, {
-          font = "small", action = function() imp:_pasteSkinUrl() end })
-    end
-    local fieldW = math.max(0, urlPlace(0) - x - math.floor(6 * m.s))
-    textField(imp, x, cy, fieldW, urlH, "skins-url", imp.skinUrl or "",
-      Strings("Paste a skin link (.zip, .cfg, .deltaskin)"),
-      imp._skinUrlFocus == true,
-      function() imp:_toggleSkinUrlFocus() end)
-  end
-  cy = cy + urlH + math.floor(8 * m.s)
-
-  -- The Studio reflows to a touch-first canvas plus inspector on phones.
-  if imp.onOpenSkinStudio then
-    local label = Strings("Open Skin Studio")
-    local bw = math.min(w, Kit.textWidth("small", label) + math.floor(40 * m.s))
-    btn(imp, x, cy, bw, m.btnH, "skins-studio", label, {
-      kind = "accent", font = "small",
-      action = function()
-        -- the studio boots the game on Play, so hand it a real cartridge
-        imp.onOpenSkinStudio(imp.modScope or "red")
-      end })
-    local hint = Strings("Design bezels and button layouts, then test them.")
-    Kit.text("small", Kit.ellipsize("small", hint,
-      w - bw - math.floor(12 * m.s)), x + bw + math.floor(12 * m.s),
-      cy + math.floor((m.btnH - Kit.textHeight("small")) / 2), PAL.muted)
-    cy = cy + m.btnH + gap
-  end
-
-  Kit.caption(x, cy, Strings("INSTALLED"))
-  cy = cy + Kit.textHeight("small") + math.floor(6 * m.s)
-
-  -- Keep the actionable list below for detailed metadata and exports, but
-  -- lead with a visual picker: skins are much easier to recognize by their
-  -- bezel than by a folder name.  Cards use the same loaded art that the
-  -- runtime draws, so they cannot drift from the selected skin.
-  local previewGap = math.floor(8 * m.s)
-  local previewCols = w >= math.floor(420 * m.s) and 2 or 1
-  local previewW = (w - previewGap * (previewCols - 1)) / previewCols
-  local previewH = math.max(108 * m.s, Kit.tapMin() * 2)
-  local previewCount = #skins
-  for i, entry in ipairs(skins) do
-    local n = i - 1
-    local px = x + (n % previewCols) * (previewW + previewGap)
-    local py = cy + math.floor(n / previewCols) * (previewH + previewGap)
-    local key = "skin-preview-" .. entry.id
-    local selected = active == entry.id
-    local focused = Kit.focusable(key, px, py, previewW, previewH)
-    Kit.card(px, py, previewW, previewH, selected and "selected"
-      or (focused or Kit.hover(px, py, previewW, previewH)))
-    local pad = math.floor(8 * m.s)
-    local artH = math.floor(previewH * 0.60)
-    Theme.fillRounded(px + pad, py + pad, previewW - pad * 2, artH,
-      PAL.bg, 1, Theme.cardRadius() * 0.6)
-    local art = entry.preview
-    if art and art.getDimensions then
-      local iw, ih = art:getDimensions()
-      if iw > 0 and ih > 0 then
-        local scale = math.min((previewW - pad * 4) / iw, (artH - pad * 2) / ih)
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(art, px + (previewW - iw * scale) * 0.5,
-          py + pad + (artH - ih * scale) * 0.5, 0, scale, scale)
-      end
-    else
-      Theme.strokeRounded(px + previewW * 0.23, py + pad + artH * 0.15,
-        previewW * 0.54, artH * 0.42, PAL.line, Theme.A.hairline, 1, 2)
-      Theme.fillRounded(px + previewW * 0.20, py + pad + artH * 0.64,
-        previewW * 0.22, artH * 0.17, PAL.steel, 0.75, 3)
-      Theme.fillRounded(px + previewW * 0.60, py + pad + artH * 0.61,
-        previewW * 0.12, artH * 0.22, PAL.steel, 0.75, artH * 0.11)
-      Theme.fillRounded(px + previewW * 0.75, py + pad + artH * 0.56,
-        previewW * 0.12, artH * 0.22, PAL.steel, 0.75, artH * 0.11)
-    end
-    Kit.text("mono", Kit.ellipsize("mono", entry.id, previewW - pad * 2),
-      px + pad, py + pad + artH + math.floor(5 * m.s),
-      selected and PAL.green or PAL.heading)
-    if selected then
-      Kit.text("micro", Strings("IN USE"), px + pad,
-        py + previewH - pad - Kit.textHeight("micro"), PAL.green)
-    end
-    if Kit.press(px, py, previewW, previewH) or Kit._activateId == key then
-      queueAction(imp, key, function() imp:_useSkin(entry.id) end)
-    end
-  end
-  if previewCount > 0 then
-    cy = cy + math.ceil(previewCount / previewCols) * previewH
-      + math.max(0, math.ceil(previewCount / previewCols) - 1) * previewGap
-      + gap
-  end
-
-  local rowH = math.max(Kit.tapMin(), math.floor(44 * m.s))
-  imp._skinGear = imp._skinGear
-    or love.graphics.newImage("assets/launcher/gear.png")
-
-  -- The row itself is "use this skin"; the gear beside it configures that
-  -- entry -- the built-in pad opens the drag-a-button layout editor, a skin
-  -- opens the studio, so neither lands on a screen that cannot edit it.
-  local function skinRow(key, id, title, detail, selected, configure, format)
-    local gearW = configure and rowH or 0
-    local rowW = w - (gearW > 0 and (gearW + math.floor(6 * m.s)) or 0)
-    local ink = rowHit(imp, x, cy, rowW, rowH, selected, key,
-      function() imp:_useSkin(id) end)
-    local tagW = selected
-      and (Kit.textWidth("small", Strings("IN USE")) + math.floor(20 * m.s))
-      or math.floor(12 * m.s)
-    local badge = format and SKIN_FORMAT_LABEL[format] or nil
-    local badgeW = 0
-    if badge then
-      badgeW = Kit.textWidth("micro", badge) + math.floor(16 * m.s)
-      local badgeH = math.floor(16 * m.s)
-      Kit.tag(x + rowW - tagW - badgeW - math.floor(12 * m.s),
-        cy + (rowH - badgeH) / 2, badgeW, badgeH, badge,
-        format == "native" and PAL.green or PAL.blue)
-      badgeW = badgeW + math.floor(10 * m.s)
-    end
-    local textW = math.max(0, rowW - math.floor(24 * m.s) - tagW - badgeW)
-    local tx = x + math.floor(12 * m.s)
-    local ty = cy + math.floor(7 * m.s)
-    Kit.text("mono", Kit.ellipsize("mono", title, textW), tx, ty,
-      ink or PAL.heading)
-    Kit.text("small", Kit.ellipsize("small", detail, textW),
-      tx, ty + Kit.textHeight("mono"), ink or PAL.muted)
-    if selected then
-      Kit.textRight("small", Strings("IN USE"), x + rowW - math.floor(12 * m.s),
-        cy + math.floor((rowH - Kit.textHeight("small")) / 2), ink or PAL.green)
-    end
-    if configure then
-      btn(imp, x + w - gearW, cy, gearW, gearW, key .. "-cfg", "", {
-        face = "invert", image = imp._skinGear, action = configure })
-    end
-    cy = cy + rowH + math.floor(4 * m.s)
-  end
-
-  local entries = { false }
-  for _, entry in ipairs(skins) do entries[#entries + 1] = entry end
-
-  local TouchSkin = require("src.core.TouchSkin")
-  local hint = Strings(
-    "You can also drop a skin .zip or .deltaskin on this window, or put a folder in %s/ of your save directory. RetroArch overlay .cfg files and Delta skins work as-is.",
-    TouchSkin.USER_ROOT)
-  local hintH = Kit.wrapHeight("small", hint, w, 3)
-  local importH = math.floor(10 * m.s) + hintH
-
-  local rowGap = math.floor(4 * m.s)
-  local pagerH = math.max(Kit.tapMin(), math.floor(30 * m.s))
-  local listTop = cy
-  local listH = availH - (cy - y) - importH
-  local perPage = Kit.rowsThatFit(listH, rowH, rowGap, MIN_SKIN_ROWS, 20)
-  if #entries > perPage then
-    perPage = Kit.rowsThatFit(listH - pagerH - gap, rowH, rowGap,
-      MIN_SKIN_ROWS, 20)
-  end
-  local first, last, cur, pages = Kit.pageBounds(page(imp, "skins"),
-    #entries, perPage)
-  setPage(imp, "skins", cur)
-  setPage(imp, "skins",
-    Kit.wheelPage(x, listTop, w, listH, cur, #entries, perPage))
-
-  for i = first, last do
-    local entry = entries[i]
-    if not entry then
-      skinRow("skin-none", nil, Strings("Built-in pad"),
-        Strings("The default on-screen buttons."), active == nil,
-        imp.onEditTouchControls and function()
-          imp.onEditTouchControls(imp.modScope or "red")
-        end or nil)
-    else
-      local bits = {}
-      bits[#bits + 1] = entry.source == "user" and Strings("installed")
-        or Strings("bundled")
-      if entry.controls > 0 then
-        bits[#bits + 1] = entry.controls .. " " .. Strings("buttons")
-      else
-        bits[#bits + 1] = Strings("bezel only")
-      end
-      if entry.pages > 1 then
-        bits[#bits + 1] = entry.pages .. " " .. Strings("pages")
-      end
-      if entry.screen then bits[#bits + 1] = Strings("screen cutout") end
-      local configure = function() imp._skinActions = { id = entry.id } end
-      skinRow("skin-" .. entry.id, entry.id, entry.id,
-        table.concat(bits, "  \194\183  "), active == entry.id, configure,
-        entry.format)
-    end
-  end
-
-  if #skins == 0 then
-    Kit.emptyBox(x, cy, w, math.floor(72 * m.s),
-      Strings("No skins installed yet."))
-    cy = cy + math.floor(72 * m.s) + gap
-  end
-
-  if pages > 1 then
-    setPage(imp, "skins",
-      Kit.pager(x, cy, w, cur, #entries, perPage, "skins"))
-    cy = cy + pagerH + gap
-  end
-
-  cy = cy + math.floor(10 * m.s)
-  Kit.textWrapped("small", hint, x, cy, w, PAL.muted, 3)
-  return cy + hintH - y
-end
-
 -- The launcher is the short path: bring a skin in, see what is enabled, or
 -- turn skin use off.  Browsing, pagination and per-skin editing/export live
 -- together in My Skins, where they are useful instead of competing here.
@@ -3521,14 +3274,26 @@ local function buildSkinsPanel(imp, x, y, w, availH, m)
       imp._skinNotice.ok and PAL.green or PAL.red, 2) + gap
   end
 
-  local addW = Kit.textWidth("small", Strings("Add")) + math.floor(24 * m.s)
+  local addLabel = Strings("Add")
+  local addW = Kit.textWidth("small", addLabel) + math.floor(24 * m.s)
+  local pasteLabel = Strings("Paste")
+  local pasteW = Kit.textWidth("small", pasteLabel) + math.floor(20 * m.s)
   if imp._skinFetch then
     Loader.inline(x, cy, w, bh, Strings("Downloading %s...",
       tostring(imp._skinFetch.name or "")))
   else
-    btn(imp, x + w - addW, cy, addW, bh, "skins-url-add", Strings("Add"), {
+    -- Add on the right, Paste inboard of it where the row is wide enough (a
+    -- phone cannot type a URL, so the paste button is the whole feature
+    -- there; on a narrow window it gives up its room to the field).
+    local urlPlace = Layout.rightCluster(x, w, gap)
+    btn(imp, urlPlace(addW), cy, addW, bh, "skins-url-add", addLabel, {
       kind = "accent", font = "small", action = function() imp:_addSkinFromUrl() end })
-    textField(imp, x, cy, w - addW - gap, bh, "skins-url", imp.skinUrl or "",
+    if w - addW - pasteW > math.floor(140 * m.s) then
+      btn(imp, urlPlace(pasteW), cy, pasteW, bh, "skins-url-paste", pasteLabel, {
+        font = "small", action = function() imp:_pasteSkinUrl() end })
+    end
+    local fieldW = math.max(0, urlPlace(0) - x - gap)
+    textField(imp, x, cy, fieldW, bh, "skins-url", imp.skinUrl or "",
       Strings("Paste a skin link (.zip, .cfg, .deltaskin)"),
       imp._skinUrlFocus == true, function() imp:_toggleSkinUrlFocus() end)
   end
@@ -3787,7 +3552,7 @@ local function buildFindPanel(imp, x, y, w, availH, m)
   local pagerH = math.max(Kit.tapMin(), math.floor(30 * m.s))
   local listH = availH - (cy - y) - pagerH - gap
   local perPage = Kit.rowsThatFit(listH, rowH, gap, MIN_FIND_ROWS, 20)
-  local first, last, cur, pages = Kit.pageBounds(page(imp, "find"), #rows, perPage)
+  local first, last, cur = Kit.pageBounds(page(imp, "find"), #rows, perPage)
   setPage(imp, "find", cur)
   local listTop = cy
   setPage(imp, "find", Kit.wheelPage(x, listTop, w, listH, cur, #rows, perPage))
@@ -3878,8 +3643,8 @@ local function buildFindPanel(imp, x, y, w, availH, m)
       rest[#rest + 1] = entry.categories[1]
     end
     if not carts then
-      for i = 1, math.min(2, #(entry.tags or {})) do
-        rest[#rest + 1] = entry.tags[i]
+      for t = 1, math.min(2, #(entry.tags or {})) do
+        rest[#rest + 1] = entry.tags[t]
       end
     end
     if dates then
@@ -4419,7 +4184,7 @@ local function buildConfirmModal(imp, m, spec)
   local gap = math.floor(10 * m.s)
   local contentH = titleH + math.floor(12 * m.s) + bodyH
     + (c.toggle and math.floor(12 * m.s) + m.btnH or 0)
-  local px, py, pw, footY, open = modalFrame(imp, m, spec and "_settingsConfirm" or "_modConfirm",
+  local px, _, pw, footY, open = modalFrame(imp, m, spec and "_settingsConfirm" or "_modConfirm",
     w, pad, 0, contentH, m.btnH, c.toggle and gap or math.floor(12 * m.s))
   local top, rw, mark, done = open()
   local cy = top
@@ -6522,7 +6287,7 @@ function Sync.link(imp, m, eng)
     function() imp:_syncFocusField("code2") end)
   cy = cy + fieldH + fit.gap
   cy = cy + Sync.status(imp, m, px + pad, cy, innerW, eng, fit)
-  cy = Sync.row(imp, m, px + pad, cy, innerW, "sync-link-go",
+  Sync.row(imp, m, px + pad, cy, innerW, "sync-link-go",
     Strings("Link this device"), { kind = "primary", enabled = not eng:busy(),
       action = function() imp:_syncLink() end }, fit)
   done()
@@ -6603,7 +6368,7 @@ function Sync.mods(imp, m, eng)
           action = function() imp:_syncApplyMods() end }, fit)
     end
   end
-  cy = cy + Sync.status(imp, m, px + pad, cy, innerW, eng, fit)
+  Sync.status(imp, m, px + pad, cy, innerW, eng, fit)
   done()
   Sync.row(imp, m, px + pad, footY, pw - 2 * pad, "sync-mods-back", Strings("Back"),
     { action = function() imp:_syncView("home") end }, fit)
@@ -6640,7 +6405,7 @@ function Sync.home(imp, m, eng)
       + 2 * (Kit.textHeight("title") + math.floor(4 * m.s))
       + math.floor(8 * m.s)) or 0
   local devices = linked and LauncherView.syncDeviceRows(eng) or {}
-  local hidden, fit = 0, nil
+  local hidden, fit = 0
   repeat
     local devicesH = #devices > 0
       and (Kit.textHeight("small") + math.floor(6 * m.s)) or 0
@@ -6699,7 +6464,7 @@ function Sync.home(imp, m, eng)
       codes and Strings("Get new sync codes") or Strings("Show my sync codes"),
       { enabled = not eng:busy(),
         action = function() imp:_syncCodes() end }, fit)
-    cy = Sync.row(imp, m, px + pad, cy, innerW, "sync-unlink",
+    Sync.row(imp, m, px + pad, cy, innerW, "sync-unlink",
       Strings("Unlink this device"), { kind = "danger",
         action = function() imp:_syncUnlink() end }, fit)
   else
@@ -6707,7 +6472,7 @@ function Sync.home(imp, m, eng)
       Strings("Create sync account"), { kind = "primary",
         enabled = not eng:busy(),
         action = function() imp:_syncCreate() end }, fit)
-    cy = Sync.row(imp, m, px + pad, cy, innerW, "sync-link",
+    Sync.row(imp, m, px + pad, cy, innerW, "sync-link",
       Strings("Link this device"), { kind = "accent",
         action = function() imp:_syncView("link") end }, fit)
   end
@@ -6737,7 +6502,7 @@ function Sync.modOptions(imp, m, eng)
     fit.lines[1]) + math.floor(8 * m.s)
   cy = cy + Kit.textWrapped("micro", names, px + pad, cy, innerW, PAL.muted,
     fit.lines[2]) + math.floor(12 * m.s)
-  cy = Sync.row(imp, m, px + pad, cy, innerW, "sync-options-import",
+  Sync.row(imp, m, px + pad, cy, innerW, "sync-options-import",
     Strings("Import their options"), { kind = "primary",
       action = function() imp:_syncAnswerModOptions(true) end }, fit)
   done()
@@ -6754,8 +6519,8 @@ function Sync.unavailable(imp, m, msg)
     2 * pad + Kit.textHeight("button") + math.floor(22 * m.s), 1, 0,
     { { font = "small", str = msg, w = innerW, max = 4 } })
   local px, pw, cy, footY, done = Sync.title(imp, m, w, pad, fit)
-  cy = cy + Kit.textWrapped("small", msg, px + pad, cy, innerW,
-    PAL.detail, fit.lines[1]) + math.floor(10 * m.s)
+  Kit.textWrapped("small", msg, px + pad, cy, innerW,
+    PAL.detail, fit.lines[1])
   done()
   Sync.row(imp, m, px + pad, footY, pw - 2 * pad, "sync-close",
     Strings("Close"), { action = function() imp:_closeSync() end }, fit)
