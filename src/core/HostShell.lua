@@ -449,6 +449,52 @@ function HostShell.spawnSelfDetached(args)
   return ok == true or ok == 0 or code == 0
 end
 
+-- Start another program and come straight back: no pipe, no wait, no console
+-- window.  `spec` is { exe, args, env = {{name, value}, ...}, cwd }, the shape
+-- src/import/ExternalGames.command builds.  Windows goes through
+-- CreateProcessW with the variables set in our own environment for the
+-- duration (a child inherits them; cmd.exe never gets involved, so no
+-- console flashes -- issue #74).  Everywhere else it is one shell line with
+-- an `env` prefix, backgrounded, the same way spawnSelfDetached restarts.
+-- Returns true when the process was started; false when it was not.
+function HostShell.spawnDetached(spec)
+  if type(spec) ~= "table" or type(spec.exe) ~= "string" or spec.exe == "" then
+    return false
+  end
+  if not require("src.core.Platform").canSpawnProcess() then return false end
+  local args = {}
+  for _, value in ipairs(spec.args or {}) do args[#args + 1] = tostring(value) end
+  local env = spec.env or {}
+
+  if HostShell.isWindows() then
+    local api = winApi()
+    if not api then return false end
+    local exe = spec.exe:gsub("/", "\\")
+    local set = {}
+    for _, pair in ipairs(env) do
+      if api.setEnv(pair[1], pair[2]) then set[#set + 1] = pair[1] end
+    end
+    local ok = api.spawn(exe, args, { cwd = spec.cwd or api.dirOf(exe) })
+    for _, name in ipairs(set) do api.setEnv(name, nil) end
+    return ok == true
+  end
+
+  local command = HostShell.quote(spec.exe)
+  for _, value in ipairs(args) do command = command .. " " .. HostShell.quote(value) end
+  local prefix = HostShell.envPrefix()
+  for _, pair in ipairs(env) do
+    prefix = (prefix == "" and "env " or prefix) .. HostShell.quote(pair[1] .. "=" .. tostring(pair[2])) .. " "
+  end
+  if type(spec.cwd) == "string" and spec.cwd ~= "" then
+    command = "cd " .. HostShell.quote(spec.cwd) .. " && " .. prefix .. command
+  else
+    command = prefix .. command
+  end
+  command = "(" .. command .. ") >/dev/null 2>&1 &"
+  local ok, _, code = os.execute(command)
+  return ok == true or ok == 0 or code == 0
+end
+
 -- MEMOISED per Lua state (so once per thread).  This used to spawn a whole
 -- `curl --version` process on every single fetch -- twice for a GET through
 -- the Android-bridge fallback -- which doubled the number of spawns the lock

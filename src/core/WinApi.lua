@@ -32,6 +32,7 @@ local DECLS = {
   "int ReadFile(void *h, void *buf, uint32_t n, uint32_t *got, void *ov);",
   "uint32_t WaitForSingleObject(void *h, uint32_t ms);",
   "int GetExitCodeProcess(void *h, uint32_t *code);",
+  "int SetEnvironmentVariableW(const uint16_t *name, const uint16_t *value);",
 }
 
 local HANDLE_FLAG_INHERIT = 0x00000001
@@ -136,6 +137,25 @@ function WinApi.dirOf(path)
   if not dir or dir == "" then return nil end
   if dir:match("^%a:$") then dir = dir .. "\\" end
   return dir
+end
+
+-- Set (value) or clear (nil) a variable in THIS process's environment, which
+-- a CreateProcessW child inherits.  Lua has no setenv, so a spawn that needs
+-- to hand a child two variables sets them here first and clears them after.
+function WinApi.setEnv(name, value)
+  local ffi = lib()
+  if not ffi or type(name) ~= "string" or name == "" then return false end
+  local ok, done = pcall(function()
+    local wname = WinApi.wide(name)
+    if not wname then return false end
+    local wvalue = nil
+    if value ~= nil then
+      wvalue = WinApi.wide(tostring(value))
+      if not wvalue then return false end
+    end
+    return ffi.C.SetEnvironmentVariableW(wname, wvalue) ~= 0
+  end)
+  return ok and done == true
 end
 
 function WinApi.spawn(exe, args, opts)

@@ -39,6 +39,7 @@ local PAL = {
   railAmber   = { 218, 145, 32 },  -- Gold cartridge (deeper metal)
   railSilver  = { 190, 198, 210 }, -- Silver cartridge (cool light metal)
   railCrystal = { 132, 196, 228 }, -- Crystal cartridge (translucent ice blue)
+  railPolished = { 186, 148, 252 }, -- Polished Crystal (amethyst, far from Crystal's cyan)
   railLeafGreen = { 38, 162, 78 }, -- LeafGreen cartridge (vibrant deep forest green)
   railFireRed = { 220, 48, 48 },   -- FireRed cartridge (deeper red than Red)
   railEmerald = { 31, 158, 110 },

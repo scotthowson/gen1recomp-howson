@@ -7,6 +7,7 @@ local HostPicker = require("src.core.HostPicker")
 local Platform = require("src.core.Platform")
 local SafeArea = require("src.core.SafeArea")
 local SecretGames = require("src.import.SecretGames")
+local ExternalGames = require("src.import.ExternalGames")
 
 local RomImporter = {}
 RomImporter.__index = RomImporter
@@ -55,6 +56,13 @@ local function tabOrder()
   if #TAB_ORDER == 0 then
     for _, version in ipairs(GameVersion.ORDER) do
       TAB_ORDER[#TAB_ORDER + 1] = version
+    end
+    for _, e in ipairs(ExternalGames.list()) do
+      local at = #TAB_ORDER
+      for i, id in ipairs(TAB_ORDER) do
+        if id == e.after then at = i break end
+      end
+      table.insert(TAB_ORDER, at + 1, e.id)
     end
     local okView, View = pcall(require, "src.import.LauncherView")
     if okView then
@@ -1488,6 +1496,59 @@ local function chooseImporterFile(promptName, exts)
   return nil
 end
 
+-- A host file dialog with no ROM assumptions: `exts` filters when given,
+-- otherwise every file is offered.  `kind` "app" on macOS asks for an
+-- application, since a .app bundle is a folder `choose file` will not enter.
+-- Same per-OS dialogs as chooseRom; nil when none could be shown.
+local function pickHostFile(prompt, filterLabel, exts, kind)
+  prompt = shellSafe(prompt)
+  filterLabel = shellSafe(filterLabel or "Files")
+  local platform = love.system.getOS()
+  local quoted, globs, semis = {}, {}, {}
+  for _, ext in ipairs(exts or {}) do
+    quoted[#quoted + 1] = ('"%s"'):format(ext)
+    globs[#globs + 1] = "*." .. ext
+    semis[#semis + 1] = "*." .. ext
+  end
+  if platform == "OS X" then
+    if kind == "app" then
+      return commandOutput(
+        [[osascript -e 'POSIX path of (choose application with prompt "]] .. prompt
+          .. [[" as alias)' 2>/dev/null]])
+    end
+    local ofType = #quoted > 0 and (" of type {" .. table.concat(quoted, ", ") .. "}") or ""
+    return commandOutput(
+      ([[osascript -e 'POSIX path of (choose file with prompt "%s"%s)' 2>/dev/null]])
+        :format(prompt, ofType))
+  elseif platform == "Windows" then
+    local filter = #semis > 0
+      and (filterLabel .. " (" .. table.concat(semis, ";") .. ")|" .. table.concat(semis, ";")
+        .. "|All files (*.*)|*.*")
+      or "All files (*.*)|*.*"
+    local script = table.concat({
+      HostPicker.WIN_OPEN_DIALOG,
+      "$d.Title='" .. prompt .. "';",
+      "$d.Filter='" .. filter .. "';",
+      HostPicker.WIN_SHOW,
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+      "[Console]::Write($d.FileName)}",
+    })
+    return commandOutput(
+      'powershell -NoProfile -STA -Command "' .. script .. '"')
+  elseif platform == "Linux" then
+    local filter = #globs > 0
+      and ([[ --file-filter="%s | %s" --file-filter="All files | *"]]):format(filterLabel, table.concat(globs, " "))
+      or ""
+    local path = commandOutput(
+      ([[zenity --file-selection --title="%s"%s 2>/dev/null]]):format(prompt, filter))
+    if path then return path end
+    local kfilter = #globs > 0 and (table.concat(globs, " ") .. "|" .. filterLabel) or ""
+    return commandOutput(
+      ([[kdialog --getopenfilename "$HOME" "%s" 2>/dev/null]]):format(kfilter))
+  end
+  return nil
+end
+
 local function zipPickCommands()
   local prompt = shellSafe(Strings("Choose a mod .zip"))
   local platform = love.system.getOS()
@@ -1843,6 +1904,10 @@ function RomImporter.new(onComplete, opts)
     self.romName[version] = "pokemon_" .. info.id .. ext
   end
   if GameVersion.VERSIONS[self.tab] and not SecretGames.shown(self, self.tab) then
+    self.tab = "red"
+  end
+  -- An external game's tab only exists where the bridge can run (desktop).
+  if ExternalGames.get(self.tab) and not (self.launcher and ExternalGames.available()) then
     self.tab = "red"
   end
   local portableErr = CacheFs.portableError()
@@ -2775,6 +2840,11 @@ function RomImporter:filedropped(file)
   -- everything else is treated as a ROM.  The dropped file itself is passed
   -- through -- installZip opens it the same way readDroppedFile does here.
   local name = file:getFilename() or ""
+  -- On an external game's panel a dropped cart is that game's ROM path (the
+  -- other build reads the file where it is; nothing is imported here).
+  if ExternalGames.get(self.tab) and self:externalDrop(self.tab, name) then
+    return
+  end
   if name:lower():match("%.gci$")
       or (self.tab == "box" and name:lower():match("%.sav$")
         and file.getSize and file:getSize() == 0x76000) then
@@ -5123,6 +5193,103 @@ function RomImporter:_stepImporter()
 
     if deadline and clock() >= deadline then break end
   end
+end
+
+-- ------- external games (src/import/ExternalGames.lua)
+--
+-- The launcher owns where the other build and the ROM live (options.lua,
+-- externalGames[id]) and whether they check out; Play spawns the build with
+-- the ROM in its environment and comes straight back.  Readiness hashes the
+-- ROM, so it is cached against the two paths and recomputed only when one
+-- changes -- never per frame.
+
+function RomImporter:externalState(id)
+  local entry = ExternalGames.get(id)
+  local SaveData = require("src.core.SaveData")
+  local settings = ExternalGames.settings(SaveData.loadOptions(), id)
+  self._external = self._external or {}
+  local cache = self._external[id]
+  if cache and cache.settings.app == settings.app and cache.settings.rom == settings.rom then
+    return cache
+  end
+  local ready, which, text = ExternalGames.readiness(entry, settings)
+  cache = { settings = settings, ready = ready == true,
+    which = ready and nil or which, label = ready and which or nil,
+    text = ready and nil or text }
+  self._external[id] = cache
+  return cache
+end
+
+function RomImporter:externalSet(id, key, value)
+  local SaveData = require("src.core.SaveData")
+  local opts = SaveData.loadOptions()
+  if not ExternalGames.setSetting(opts, id, key, value) then return false end
+  SaveData.saveOptions(opts)
+  if self._external then self._external[id] = nil end
+  self._externalNotice = nil
+  return true
+end
+
+local function externalAppExts()
+  local osName = love.system.getOS()
+  if osName == "Windows" then return { "exe" } end
+  if osName == "Linux" then return { "AppImage", "sh" } end
+  return nil
+end
+
+function RomImporter:externalChooseApp(id)
+  local entry = ExternalGames.get(id)
+  if not entry or not Platform.canSpawnProcess() then return end
+  local path = pickHostFile("Choose the " .. entry.app.name .. " app",
+    entry.app.name, externalAppExts(), "app")
+  if path then self:externalSet(id, "app", path) end
+end
+
+function RomImporter:externalChooseRom(id)
+  local entry = ExternalGames.get(id)
+  if not entry or not Platform.canSpawnProcess() then return end
+  local path = pickHostFile("Choose your " .. entry.label .. " ROM",
+    "Game Boy Color ROM", entry.rom.extensions)
+  if path then self:externalSet(id, "rom", path) end
+end
+
+-- A file dropped on the external panel: take a cart as the ROM path.
+function RomImporter:externalDrop(id, path)
+  local entry = ExternalGames.get(id)
+  if not entry or type(path) ~= "string" then return false end
+  local lower = path:lower()
+  local matches = false
+  for _, ext in ipairs(entry.rom.extensions) do
+    if lower:match("%." .. ext .. "$") then matches = true break end
+  end
+  if not matches then return false end
+  -- A relative name means the drop came through the save directory rather
+  -- than as a host path; the other build could not find it from there.
+  if not require("src.import.RomSources").isAbsolute(path) then return false end
+  return self:externalSet(id, "rom", path)
+end
+
+function RomImporter:externalPlay(id)
+  local entry = ExternalGames.get(id)
+  if not entry then return end
+  local state = self:externalState(id)
+  if not state.ready then return end
+  -- one spawn per press: a held button or a double tap must not start two
+  local now = love.timer and love.timer.getTime and love.timer.getTime() or os.time()
+  if self._externalLaunchedAt and now - self._externalLaunchedAt < 2 then return end
+  self._externalLaunchedAt = now
+  local spec, why = ExternalGames.command(entry, state.settings, love.system.getOS())
+  local ok = spec ~= nil and HostShell.spawnDetached(spec)
+  self._externalNotice = { id = id, ok = ok == true,
+    text = ok and ("Started " .. entry.app.name .. ". The first launch imports the ROM "
+        .. "there, which takes a few seconds; later launches boot straight in.")
+      or ("Could not start " .. entry.app.name .. (why and (": " .. why) or ".")
+        .. " Check that the app path still points at the executable.") }
+end
+
+function RomImporter:externalOpenURL(url)
+  if type(url) ~= "string" or url == "" then return end
+  if love.system and love.system.openURL then pcall(love.system.openURL, url) end
 end
 
 function RomImporter:_switchTab(id)

@@ -100,6 +100,7 @@ tests/engine/evolution_hold_b_bug968_test.lua
 tests/engine/evolution_timing_bug2033.lua
 tests/engine/exp_traded_ot_survives_reload_bug1265.lua
 tests/engine/explode_substitute_bug2900.lua
+tests/engine/external_games_test.lua
 tests/engine/faithful_res_mobile.lua
 tests/engine/faithful_res_nx.lua
 tests/engine/faithful_res.lua

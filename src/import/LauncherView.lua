@@ -36,6 +36,7 @@ local Loader = require("src.ui.kit.Loader")
 local Transition = require("src.ui.kit.Transition")
 local GameVersion = require("src.core.GameVersion")
 local SecretGames = require("src.import.SecretGames")
+local ExternalGames = require("src.import.ExternalGames")
 local Version = require("src.core.Version")
 local Strings = require("src.core.Strings")
 local WebClip = require("src.core.WebClip")
@@ -1595,6 +1596,18 @@ local GAME_TABS = {
     color = PAL.railEmerald, label = "Emerald" },
 }
 
+for _, g in ipairs(GAME_TABS) do g.gen = GameVersion.generation(g.id) end
+
+-- Games that play through another build (src/import/ExternalGames.lua).  They
+-- ride the same picker as the cartridges, grouped with their generation, and
+-- open a panel of their own instead of a game panel: no cache, no slots.
+local EXTERNAL_TABS = {}
+for _, e in ipairs(ExternalGames.list()) do
+  EXTERNAL_TABS[#EXTERNAL_TABS + 1] = { id = e.id, key = "tab-" .. e.id,
+    letter = e.letter, color = PAL.railPolished, label = e.label,
+    gen = e.generation, after = e.after, external = true }
+end
+
 local HEADER_TABS = {
   { id = "box", key = "tab-box", glyph = true, beta = true },
   { id = "mods",   key = "tab-mods" },
@@ -1657,6 +1670,9 @@ local function gameTabs(imp)
       colors[#colors + 1] = g.color
     end
   end
+  if launcher and #EXTERNAL_TABS > 0 and ExternalGames.available() then
+    list = ExternalGames.splice(list, EXTERNAL_TABS)
+  end
   if type(imp) == "table" then
     imp._gameTabs = { rev = SecretGames.rev, launcher = launcher,
       list = list, colors = colors }
@@ -1710,6 +1726,13 @@ local function headerChrome(imp)
     end
   end
   for _, g in ipairs(GAME_TABS) do
+    local id = g.id
+    c.tab[id] = function()
+      imp._gamePopup = nil
+      imp:_switchTab(id)
+    end
+  end
+  for _, g in ipairs(EXTERNAL_TABS) do
     local id = g.id
     c.tab[id] = function()
       imp._gamePopup = nil
@@ -2463,6 +2486,146 @@ local function buildGamePanel(imp, x, y, w, availH, m, version, budgetH)
     bottom = math.max(bottom, slotY + (slotH or 0))
   end
   return bottom - y
+end
+
+-- ------------------------------------------------------------ external game
+
+-- A path, shortened from the left so the file name stays readable.
+local function shortPath(path, font, maxW)
+  if not path then return nil end
+  if Kit.textWidth(font, path) <= maxW then return path end
+  local tail = path
+  while #tail > 4 and Kit.textWidth(font, "..." .. tail) > maxW do
+    tail = tail:sub(2)
+  end
+  return "..." .. tail
+end
+
+-- One "where is it" card: a heading, the chosen path (or what is missing),
+-- a verdict line, and a Choose button beside a Get link.
+local function buildExternalRow(imp, x, y, w, m, key, heading, path, verdict,
+    verdictColor, chooseLabel, chooseAction, linkLabel, linkUrl)
+  local pad = math.floor(14 * m.s)
+  local iw = w - 2 * pad
+  local gap = math.floor(8 * m.s)
+  local lineH = Kit.textHeight("small")
+  local h = pad + Kit.textHeight("button") + math.floor(4 * m.s) + lineH
+    + math.floor(2 * m.s) + lineH + math.floor(10 * m.s) + m.btnH + pad
+  Kit.card(x, y, w, h)
+  local cy = y + pad
+  Kit.text("button", heading, x + pad, cy, PAL.heading)
+  cy = cy + Kit.textHeight("button") + math.floor(4 * m.s)
+  Kit.text("small", shortPath(path, "small", iw) or Strings("Not set"), x + pad, cy,
+    path and PAL.text or PAL.muted)
+  cy = cy + lineH + math.floor(2 * m.s)
+  Kit.text("small", Kit.ellipsize("small", verdict or "", iw), x + pad, cy, verdictColor)
+  cy = cy + lineH + math.floor(10 * m.s)
+  local linkW = linkUrl and math.min(math.floor(iw * 0.45),
+    Kit.textWidth("small", linkLabel) + math.floor(28 * m.s)) or 0
+  local chooseW = iw - (linkUrl and linkW + gap or 0)
+  btn(imp, x + pad, cy, chooseW, m.btnH, key .. "-choose", chooseLabel, {
+    kind = "accent", font = "small", action = chooseAction })
+  if linkUrl then
+    btn(imp, x + pad + chooseW + gap, cy, linkW, m.btnH, key .. "-get", linkLabel, {
+      font = "small", icon = "globe",
+      action = function() imp:externalOpenURL(linkUrl) end })
+  end
+  return h
+end
+
+-- The panel an external game opens: it says plainly that the game plays
+-- through another build, shows where that build and the ROM are, and
+-- offers Play once both check out.  No cache, no slots: the other build
+-- owns those.  Height-budgeted the same way the game panel is; whatever
+-- a short window cannot show, the page scroll reaches.
+local function buildExternalPanel(imp, x, y, w, availH, m, id)
+  local entry = ExternalGames.get(id)
+  local state = imp:externalState(id)
+  local gap = math.floor(8 * m.s)
+  local titleH = Kit.textHeight("title")
+  local tagH = Kit.textHeight("micro") + math.floor(10 * m.s)
+  local betaW = Kit.textWidth("micro", "BETA") + 12 * m.s
+  local status = state.ready and Strings("Ready") or Strings("SETUP NEEDED")
+  local statusColor = state.ready and PAL.green or PAL.yellow
+  local statusW = Kit.textWidth("micro", status) + 18 * m.s
+  local gameName = Strings(entry.label)
+  local nameW = Kit.textWidth("title", gameName)
+  local inline = nameW + betaW + statusW + 4 * gap <= w
+  local titleW = inline and (w - betaW - statusW - 4 * gap) or (w - betaW - gap)
+  local title = Kit.ellipsize("title", gameName, titleW)
+  Kit.textBold("title", title, x, y, PAL.heading)
+  local tx = x + Kit.textWidth("title", title) + gap
+  drawBetaTag(tx, y + (titleH - tagH) / 2, betaW, tagH)
+  tx = tx + betaW + gap
+  local sy = y + (titleH - tagH) / 2
+  if not inline then tx, sy = x, y + titleH + math.floor(4 * m.s) end
+  Kit.tag(tx, sy, statusW, tagH, status, statusColor)
+  if not inline then titleH = titleH + math.floor(4 * m.s) + tagH end
+  local cy = y + titleH + math.floor(12 * m.s)
+
+  local lx, lw, rx2, rw
+  if m.twoCol then
+    local colW = math.floor((w - m.colGap) / 2)
+    lx, lw = x, colW
+    rx2, rw = x + colW + m.colGap, colW
+  else
+    lx, lw, rx2, rw = x, w, x, w
+  end
+
+  -- LEFT: what this is, then Play.
+  local ly = cy
+  do
+    local pad = math.floor(14 * m.s)
+    local iw = lw - 2 * pad
+    local intro = Strings("%s is a Crystal ROM hack with an engine of its own. "
+      .. "This launcher starts it in the %s build, which imports the ROM on its "
+      .. "first launch and keeps its own saves.", gameName, entry.app.name)
+    local introH = Kit.wrapHeight("small", intro, iw, 6)
+    local h = pad + introH + pad
+    Kit.card(lx, ly, lw, h)
+    Kit.textWrapped("small", intro, lx + pad, ly + pad, iw, PAL.detail, 6)
+    ly = ly + h + gap
+  end
+  do
+    local playH = math.max(m.btnH, math.floor(48 * m.s))
+    btn(imp, lx, ly, lw, playH, "external-play-" .. id, Strings("Play"), {
+      kind = "accent", enabled = state.ready,
+      action = function() imp:externalPlay(id) end })
+    ly = ly + playH + math.floor(6 * m.s)
+    local notice = imp._externalNotice
+    if notice and notice.id == id then
+      ly = ly + Kit.textWrapped("small", notice.text, lx, ly, lw,
+        notice.ok and PAL.green or PAL.yellow, 3) + gap
+    elseif not state.ready then
+      ly = ly + Kit.textWrapped("small", state.text or "", lx, ly, lw, PAL.muted, 3) + gap
+    else
+      ly = ly + Kit.textWrapped("small",
+        Strings("Verified %s build. Press Play to start.", state.label or ""),
+        lx, ly, lw, PAL.muted, 2) + gap
+    end
+  end
+
+  -- RIGHT (or below): the two paths.
+  local ry = m.twoCol and cy or ly
+  local appOk = state.settings.app and state.which ~= "app"
+  local appVerdict = not state.settings.app and Strings("Choose the %s app you installed.", entry.app.name)
+    or (state.which == "app" and state.text or Strings("Found."))
+  ry = ry + buildExternalRow(imp, rx2, ry, rw, m, "external-app-" .. id,
+    Strings("%s app", entry.app.name), state.settings.app, appVerdict,
+    appOk and PAL.green or PAL.yellow,
+    Strings("Choose app"), function() imp:externalChooseApp(id) end,
+    Strings("Get it"), entry.app.url) + gap
+  local romOk = state.ready
+  local romVerdict = not state.settings.rom and Strings("Or drop the .gbc file here.")
+    or (state.which == "rom" and state.text or Strings("Verified %s build.", state.label or ""))
+  ry = ry + buildExternalRow(imp, rx2, ry, rw, m, "external-rom-" .. id,
+    Strings("Polished Crystal ROM"), state.settings.rom, romVerdict,
+    romOk and PAL.green or PAL.yellow,
+    Strings("Choose ROM"), function() imp:externalChooseRom(id) end,
+    Strings("Get the patch"), entry.rom.url) + gap
+
+  local bottom = math.max(ly, ry)
+  return math.max(bottom - y, 0)
 end
 
 -- --------------------------------------------------------------- mods panel
@@ -4753,36 +4916,55 @@ local function buildModScopeModal(imp, m)
 end
 
 -- The cartridge picker uses two columns and spatial controller navigation.
+-- Games sit under a header per generation (GEN 1 - GAME BOY, ...), in the
+-- order the picker list carries them, so the list reads as a shelf rather
+-- than eleven buttons in release order.
 local function buildGameModal(imp, m)
   local pad = math.floor(18 * m.s)
   local headH = Kit.textHeight("button") + math.floor(12 * m.s)
   local avail = m.H - 2 * m.pad
   local cols, gap, btnH = 2, math.floor(8 * m.s), m.btnH
   local tabs = gameTabs(imp)
-  local function rows() return math.ceil(#tabs / cols) + 1 end
-  local function total() return 2 * pad + headH + rows() * btnH
-    + (rows() - 1) * gap end
+  local groups = ExternalGames.groupByGeneration(tabs)
+  local labelH = Kit.textHeight("micro") + math.floor(6 * m.s)
+  local function gridRows()
+    local n = 0
+    for _, g in ipairs(groups) do n = n + math.ceil(#g.items / cols) end
+    return n
+  end
+  -- every grid row and every group label, with a gap after each but the last
+  local function contentH()
+    local rows = gridRows()
+    return rows * btnH + #groups * labelH + (rows + #groups - 1) * gap
+  end
+  local function total() return 2 * pad + headH + contentH() + gap + btnH end
   if total() > avail then gap = math.max(2, math.floor(3 * m.s)) end
   if total() > avail then
     btnH = math.max(Kit.tapMin(),
-      btnH - math.ceil((total() - avail) / rows()))
+      btnH - math.ceil((total() - avail) / (gridRows() + 1)))
   end
-  local nrows = rows() - 1
   local w = math.floor(440 * m.s)
   local px, py, pw, footY, open = modalFrame(imp, m, "_gamePopup", w, pad,
-    headH, nrows * (btnH + gap) - gap, btnH, gap)
+    headH, contentH(), btnH, gap)
   Kit.text("button", Strings("Choose game"), px + pad, py + pad, PAL.heading)
-  local _, rw, mark, done = open()
+  local top, rw, mark, done = open()
   local chrome = headerChrome(imp)
   local colW = math.floor((rw - (cols - 1) * gap) / cols)
-  for i, g in ipairs(tabs) do
-    local bx = px + pad + ((i - 1) % cols) * (colW + gap)
-    local id = "gamepop-" .. g.id
-    btn(imp, bx, mark(id, math.floor((i - 1) / cols) * (btnH + gap), btnH), colW, btnH, id,
-      Strings(g.label), {
-        face = "tab", font = "small", letter = g.letter, color = g.color,
-        active = imp.tab == g.id,
-        action = chrome.tab[g.id] })
+  local ry = 0
+  for _, group in ipairs(groups) do
+    local label = ExternalGames.GENERATION_LABELS[group.gen] or ("GEN " .. tostring(group.gen))
+    Kit.text("micro", Strings(label), px + pad, top + ry + math.floor(2 * m.s), PAL.muted)
+    ry = ry + labelH
+    for i, g in ipairs(group.items) do
+      local bx = px + pad + ((i - 1) % cols) * (colW + gap)
+      local id = "gamepop-" .. g.id
+      btn(imp, bx, mark(id, ry + math.floor((i - 1) / cols) * (btnH + gap), btnH), colW, btnH, id,
+        Strings(g.label), {
+          face = "tab", font = "small", letter = g.letter, color = g.color,
+          active = imp.tab == g.id,
+          action = chrome.tab[g.id] })
+    end
+    ry = ry + math.ceil(#group.items / cols) * (btnH + gap)
   end
   done()
   btn(imp, px + pad, footY, pw - 2 * pad, btnH, "gamepop-close",
@@ -6963,6 +7145,8 @@ local function buildTabPanel(imp, x, y, w, availH, budgetH, m)
   elseif imp.tab == "online" then
     return require("src.import.OnlinePanel")
       .buildOnlinePanel(imp, x, y, w, budgetH, m)
+  elseif ExternalGames.get(imp.tab) then
+    return buildExternalPanel(imp, x, y, w, availH, m, imp.tab)
   end
   return buildGamePanel(imp, x, y, w, availH, m, imp.tab, budgetH)
 end

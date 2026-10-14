@@ -146,7 +146,13 @@ end
 now = 1790856000
 local releasedTabs = LauncherView.gameTabs(timed)
 check(releasedTabs ~= lockedTabs, "deadline invalidates the already-cached game list")
-T.eq(#releasedTabs, #GameVersion.ORDER, "deadline exposes every game")
+local releasedGames = 0
+for _, g in ipairs(releasedTabs) do
+  -- external games (src/import/ExternalGames.lua) ride the picker too, but
+  -- they are not cartridges of this engine and never lock
+  if not g.external then releasedGames = releasedGames + 1 end
+end
+T.eq(releasedGames, #GameVersion.ORDER, "deadline exposes every game")
 check(ids(releasedTabs):find(" ruby sapphire ", 1, true) ~= nil, "deadline keeps Ruby and Sapphire on the rail")
 check(ids(releasedTabs):find(" emerald ", 1, true) ~= nil, "deadline includes Emerald")
 T.eq(SecretGames.rev, lockedRev + 1, "scheduled unlock advances the revision once")
