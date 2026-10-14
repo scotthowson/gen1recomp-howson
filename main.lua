@@ -1022,6 +1022,39 @@ function love.load(args)
   -- forever (#887).  Consumed on read, so the very next launch is normal.
   if relaunched then launchOptionsSuppressed = true end
 
+  -- --rom=<path> (or POKEPORT_ROM): a frontend that only knows the file the
+  -- player clicked (RomM Desktop, ES-DE, Playnite) hands it over and the game
+  -- is worked out from its SHA-1.  Already imported: boot it exactly like
+  -- --game=<that version>, slot and task flags included.  Not yet: import it
+  -- and boot, the same import-then-boot the POKEPORT_IMPORT_ROM build step
+  -- has always done.  Unreadable or not a supported ROM: the launcher opens
+  -- and says why instead of booting nothing.  An explicit --game wins over
+  -- the file, so a shortcut that names both is never second-guessed.
+  if not relaunched and resolvedLaunch.rom and not resolvedLaunch.game
+      and not resolvedLaunch.launcher then
+    local romVersion, why = require("src.import.RomIdentify")
+      .pathVersion(resolvedLaunch.rom)
+    if romVersion and RomImporter.isReady(romVersion) then
+      resolvedLaunch.game = romVersion
+    elseif romVersion then
+      local romRequest = resolvedLaunch
+      Importer = RomImporter.new(function(version)
+        Importer = nil
+        version = version or romVersion
+        if romRequest.slot then LaunchOptions.selectSlot(version, romRequest.slot) end
+        launchedIntoGame = true
+        bootGame(version)
+      end)
+      Importer:startPath(resolvedLaunch.rom)
+      return
+    else
+      print("launch: --rom not booted: " .. tostring(why))
+      Importer = makeLauncher()
+      Importer:setError(why)
+      return
+    end
+  end
+
   if not relaunched and resolvedLaunch.game and not resolvedLaunch.launcher
       and startLaunchRequest(resolvedLaunch) then
     return

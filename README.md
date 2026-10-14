@@ -162,6 +162,7 @@ modding book, link play, save editor, and developer setup guides:
 - [Rulesets](docs/guides/rulesets.md): faithful Gen 1 quirks or modern cleanups
 - [Online play](docs/guides/online-play.md): lobby, battles, tournaments, trading
 - [Launch options](docs/guides/launch-options.md): one-click shortcuts and URLs
+- [RomM](docs/guides/romm.md): launch from a RomM library through RomM Desktop
 - [Portable mode](docs/guides/portable-mode.md): run from a USB drive
 - [Running from source](docs/guides/running-from-source.md)
 - [Modding](docs/modding-overview.md): mod platform, example mods, Tiled map editing

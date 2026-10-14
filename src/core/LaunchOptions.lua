@@ -6,6 +6,9 @@
 --   love . --game=firered           -- boot FireRed (src/core/game3.lua)
 --   love . --game=red --launcher    -- open the launcher anyway (a shortcut
 --                                      the player wants to edit)
+--   love . --rom=/roms/gb/red.gb    -- boot whichever game that file is,
+--                                      importing it first if it never was
+--                                      (POKEPORT_ROM=... for env-only hosts)
 --   POKEPORT_GAME=blue love .       -- same, for launchers that only pass env
 --
 -- The "--flag value" spelling parses here (argValue reads argv[i + 1]), but it
@@ -236,6 +239,11 @@ local function request(argv, rawArgv, uri)
     cart = uri.cart
     cartSpecified = true
   end
+  -- A ROM path instead of a game name: a frontend (RomM Desktop, ES-DE,
+  -- Playnite) that only knows which file the player clicked.  main.lua maps
+  -- it to a version by SHA-1 (src/import/RomIdentify.lua); an explicit
+  -- --game still wins, so this is only consulted when no game was named.
+  local rom = trim(argValue(argv, "rom")) or trim(os.getenv("POKEPORT_ROM"))
   local launcher
   if argFlag(argv, "launcher") or argFlag(rawArgv, "launcher") then
     launcher = true
@@ -248,6 +256,7 @@ local function request(argv, rawArgv, uri)
     game = game,
     cart = cart,
     slot = slot,
+    rom = rom,
     cartSpecified = cartSpecified,
     launcher = launcher,
     uri = uri,
